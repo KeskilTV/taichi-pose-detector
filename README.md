@@ -2,6 +2,10 @@
 
 Проект для анализа движений Тайцзи с использованием компьютерного зрения (MediaPipe) и OpenCV.  
 Приложение обнаруживает позу человека на видео, отрисовывает скелет и позволяет оценивать технику выполнения форм.
+<img width="1081" height="1080" alt="image" src="https://github.com/user-attachments/assets/cd6e44a7-6fca-4050-afd1-df96d0e32705" />
+
+<img width="1887" height="1016" alt="image" src="https://github.com/user-attachments/assets/bb628744-fdb6-43a8-9de9-cd8623253521" />
+
 
 ## 🚀 Возможности
 
