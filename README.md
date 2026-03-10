@@ -6,6 +6,7 @@
 
 <img width="1887" height="1016" alt="image" src="https://github.com/user-attachments/assets/bb628744-fdb6-43a8-9de9-cd8623253521" />
 
+<img width="794" height="923" alt="image" src="https://github.com/user-attachments/assets/feef297a-35d8-4f0d-8612-902df2541fa8" />
 
 ## 🚀 Возможности
 
