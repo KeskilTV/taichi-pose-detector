@@ -121,10 +121,11 @@ if st.button("🚀 Запустить сравнение", type='primary', disab
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = f"output_videos/comparison_{timestamp}.mp4"
 
-        output_path, segments = engine.create_comparison_video(
+        output_path, segments, dtw_path = engine.create_comparison_video(
             master_path, student_path, output_path,
-            poses_master, poses_student_aligned,
-            segments_master=segments_master
+            poses_master, poses_student,  # ← Теперь передаём оригинальные позы
+            segments_master=segments_master,
+            dtw_path=dtw_path  # ← Передаем DTW путь
         )
         progress_bar.progress(85)
 

@@ -1,6 +1,6 @@
 """
 Движок сравнения движений Тайцзи
-Сравнивает позы мастера и ученика, считает метрики, синхронизирует по времени
+ИСПРАВЛЕННАЯ ВЕРСИЯ: синхронизация видео + поз по DTW пути
 """
 import cv2
 import mediapipe as mp
@@ -9,6 +9,7 @@ import os
 from datetime import datetime
 from src.segment_detector import SegmentDetector
 from src.dtw_aligner import DTWAligner
+from src.text_renderer import draw_text_cv2
 
 
 class ComparisonEngine:
@@ -34,8 +35,8 @@ class ComparisonEngine:
             (24, 26), (26, 28), (28, 30), (28, 32)
         ]
 
-        self.segment_detector = SegmentDetector()
-        self.dtw_aligner = DTWAligner()
+        self.segment_detector = SegmentDetector(min_segment_length=150)
+        self.dtw_aligner = DTWAligner(step=5, window_size=50)
 
     def extract_poses(self, video_path):
         """Извлекает все позы из видео"""
@@ -63,6 +64,31 @@ class ComparisonEngine:
 
         cap.release()
         return poses
+
+    def get_frame_at_index(self, cap, target_index, current_index, current_frame):
+        """
+        Получает кадр по индексу (перемотка видео)
+
+        Args:
+            cap: VideoCapture объект
+            target_index: Нужный номер кадра
+            current_index: Текущая позиция
+            current_frame: Текущий кадр (кэш)
+
+        Returns:
+            frame, new_index
+        """
+        if target_index == current_index:
+            return current_frame, current_index
+
+        # Перемотка к нужному кадру
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_index)
+        ret, frame = cap.read()
+
+        if ret:
+            return frame, target_index
+        else:
+            return current_frame, current_index
 
     def calculate_balance(self, pose):
         """Расчет баланса (центр тяжести)"""
@@ -124,9 +150,13 @@ class ComparisonEngine:
         return image
 
     def create_comparison_video(self, master_path, student_path, output_path,
-                                 poses_master, poses_student, segments_master=None):
+                                 poses_master, poses_student, segments_master=None,
+                                 dtw_path=None):
         """
-        Создает видео с сравнением (split-screen) + маркеры форм + DTW синхронизация
+        Создает видео с сравнением (split-screen) + DTW синхронизация видео и поз
+
+        Args:
+            dtw_path: Путь DTW [(m_idx, s_idx), ...] - если None, создаётся новый
         """
         cap_master = cv2.VideoCapture(master_path)
         cap_student = cv2.VideoCapture(student_path)
@@ -152,80 +182,103 @@ class ComparisonEngine:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps_m, (output_width, output_height))
 
-        # Детекция сегментов если не переданы
+        # Детекция сегментов
         if segments_master is None:
             segments_master = self.segment_detector.detect_segments(poses_master)
-            print(f"📍 Найдено сегментов (форм): {len(segments_master)}")
-            for i, seg in enumerate(segments_master):
-                print(f"   {i+1}. {seg['name']}: кадры {seg['start']}-{seg['end']} ({seg['end']-seg['start']} кадров)")
 
-        frame_count = 0
-        min_frames = min(len(poses_master), len(poses_student))
+        # DTW путь
+        if dtw_path is None:
+            print("⏳ Вычисление DTW пути...")
+            _, dtw_path, _, _ = self.dtw_aligner.align_poses(poses_master, poses_student)
 
-        while frame_count < min_frames:
-            ret1, frame_master = cap_master.read()
-            ret2, frame_student = cap_student.read()
+        print(f"🔗 DTW путь: {len(dtw_path)} пар кадров")
 
-            if not ret1 or not ret2:
-                break
+        # Переменные для перемотки видео
+        curr_m_idx = 0
+        curr_s_idx = 0
+        frame_master = None
+        frame_student = None
 
+        # Обработка по DTW пути
+        for out_frame_idx, (m_idx, s_idx) in enumerate(dtw_path):
+            # Получаем кадры по индексам DTW
+            frame_master, curr_m_idx = self.get_frame_at_index(
+                cap_master, m_idx, curr_m_idx, frame_master
+            )
+            frame_student, curr_s_idx = self.get_frame_at_index(
+                cap_student, s_idx, curr_s_idx, frame_student
+            )
+
+            if frame_master is None or frame_student is None:
+                continue
+
+            # Изменяем размер
             frame_master = cv2.resize(frame_master, (width_m_new, target_height))
             frame_student = cv2.resize(frame_student, (width_s_new, target_height))
 
-            pose_m = poses_master[frame_count]
-            pose_s = poses_student[frame_count]
+            # Получаем позы
+            pose_m = poses_master[m_idx] if m_idx < len(poses_master) else None
+            pose_s = poses_student[s_idx] if s_idx < len(poses_student) else None
 
+            # Рисуем скелеты
             frame_master_vis = self.draw_skeleton(frame_master, pose_m, color=(0, 255, 0))
             frame_student_vis = self.draw_skeleton(frame_student, pose_s, color=(0, 0, 255))
 
-            # Название текущей формы
-            current_form = self.segment_detector.get_current_form(segments_master, frame_count)
+            # Название формы
+            current_form = self.segment_detector.get_current_form(segments_master, m_idx)
 
-            # Фон для текста
+            # Чёрный фон для текста
             cv2.rectangle(frame_master_vis, (0, 0), (frame_master_vis.shape[1], 100), (0, 0, 0), -1)
             cv2.rectangle(frame_student_vis, (0, 0), (frame_student_vis.shape[1], 100), (0, 0, 0), -1)
 
-            # Текст названия формы
-            cv2.putText(frame_master_vis, current_form, (10, 35),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.putText(frame_student_vis, current_form, (10, 35),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            # Текст (кириллица)
+            frame_master_vis = draw_text_cv2(
+                frame_master_vis, current_form, (10, 35), font_size=18, color=(255, 255, 255)
+            )
+            frame_student_vis = draw_text_cv2(
+                frame_student_vis, current_form, (10, 35), font_size=18, color=(255, 255, 255)
+            )
 
-            # Текст MASTER / STUDENT
-            cv2.putText(frame_master_vis, "MASTER", (10, 70),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(frame_student_vis, "STUDENT", (10, 70),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            frame_master_vis = draw_text_cv2(
+                frame_master_vis, "MASTER", (10, 70), font_size=18, color=(0, 255, 0)
+            )
+            frame_student_vis = draw_text_cv2(
+                frame_student_vis, "STUDENT", (10, 70), font_size=18, color=(0, 0, 255)
+            )
 
-            # Прогресс бар сегмента
+            # Индексы кадров для отладки
+            frame_master_vis = draw_text_cv2(
+                frame_master_vis, f"Frame: {m_idx}", (frame_master_vis.shape[1] - 150, 35),
+                font_size=14, color=(200, 200, 200)
+            )
+            frame_student_vis = draw_text_cv2(
+                frame_student_vis, f"Frame: {s_idx}", (frame_student_vis.shape[1] - 150, 35),
+                font_size=14, color=(200, 200, 200)
+            )
+
+            # Прогресс бар
             if segments_master:
                 for seg in segments_master:
-                    if seg['start'] <= frame_count <= seg['end']:
-                        progress = (frame_count - seg['start']) / max(1, seg['end'] - seg['start'])
+                    if seg['start'] <= m_idx <= seg['end']:
+                        progress = (m_idx - seg['start']) / max(1, seg['end'] - seg['start'])
                         bar_width = int(frame_master_vis.shape[1] * progress)
-                        cv2.rectangle(frame_master_vis, (10, 80), (10 + bar_width, 90),
-                                     (0, 255, 0), -1)
-                        cv2.rectangle(frame_student_vis, (10, 80), (10 + bar_width, 90),
-                                     (0, 0, 255), -1)
+                        cv2.rectangle(frame_master_vis, (10, 80), (10 + bar_width, 90), (0, 255, 0), -1)
+                        cv2.rectangle(frame_student_vis, (10, 80), (10 + bar_width, 90), (0, 0, 255), -1)
                         break
 
-            # Номер кадра
-            cv2.putText(frame_master_vis, f"Frame: {frame_count}", (frame_master_vis.shape[1] - 150, 35),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-
+            # Объединяем
             combined = np.hstack([frame_master_vis, frame_student_vis])
             out.write(combined)
 
-            frame_count += 1
-            if frame_count % 30 == 0:
-                print(f"  → Обработано кадров: {frame_count}/{min_frames}")
+            if out_frame_idx % 30 == 0:
+                print(f"  → Обработано: {out_frame_idx}/{len(dtw_path)} (M:{m_idx}, S:{s_idx})")
 
         cap_master.release()
         cap_student.release()
         out.release()
 
         print(f"✓ Видео сохранено: {output_path}")
-        return output_path, segments_master
+        return output_path, segments_master, dtw_path
 
     def close(self):
         self.pose.close()
